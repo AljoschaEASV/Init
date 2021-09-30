@@ -1,0 +1,79 @@
+stages:
+  - build
+  - test
+  - deploy
+
+build:
+  stage: build
+  tags:
+   - build
+  only:
+    - main
+  cache:
+    paths:
+      - node_modules
+      - vendor
+  before_script:
+    - docker-compose --project-name finalexam-web_application up -d --build
+  script:
+    - mkdir -p storage/framework/{sessions,views,cache}
+    - docker-compose --project-name finalexam-web_application exec -T --user vvuser tooling composer install --optimize-autoloader --no-interaction
+    - docker-compose --project-name finalexam-web_application exec -T --user vvuser tooling npm ci
+    - docker-compose --project-name finalexam-web_application exec -T --user vvuser tooling npm run production
+  after_script:
+    - docker-compose --project-name finalexam-web_application down
+
+test:
+  stage: test
+  tags:
+    - test
+  variables:
+    GIT_STRATEGY: none
+    GIT_SUBMODULE_STRATEGY: none
+  before_script:
+    - docker-compose --project-name finalexam-web_application up -d
+  script:
+    - docker-compose --project-name finalexam-web_application exec -T --user vvuser application php artisan test
+  after_script:
+    - docker-compose --project-name finalexam-web_application down
+
+deploy:
+  environment:
+    name: live
+    url: https://finalexam.visuel.dev
+  stage: deploy
+  tags:
+    - deploy
+  only:
+    - main
+  variables:
+    GIT_STRATEGY: none
+    GIT_SUBMODULE_STRATEGY: none
+  before_script:
+    - docker-compose --project-name finalexam-web_application up -d
+    - docker-compose --project-name finalexam-web_application exec -T --user vvuser tooling composer install --optimize-autoloader --no-interaction --no-dev
+  script:
+    - eval `ssh-agent -s`
+    - ssh-add
+    - >
+      ssh $SERVER_USER@$SERVER_HOST "
+        cd $SERVER_PATH && php artisan down
+      "
+    - >
+      rsync -av -e "ssh" --delete --exclude="public/storage"
+      app bootstrap config database public routes resources vendor artisan
+      $SERVER_USER@$SERVER_HOST:$SERVER_PATH
+    - >
+      rsync -av -e "ssh"
+      composer.json
+      $SERVER_USER@$SERVER_HOST:$SERVER_PATH
+    - >
+      ssh $SERVER_USER@$SERVER_HOST "
+        cd $SERVER_PATH &&
+        php artisan migrate --force &&
+        php artisan optimize:clear &&
+        php artisan optimize &&
+        php artisan up
+      "
+  after_script:
+    - docker-compose --project-name finalexam-web_application down
